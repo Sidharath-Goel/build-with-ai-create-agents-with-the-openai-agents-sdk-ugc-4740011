@@ -5,7 +5,10 @@ All examples use Python and the OpenAI client.
 Prereqs:
   pip install -r requirements.txt
   Install Ollama, run 'ollama serve', pull 'llama3.2'
-"""
+..Running local Llama server
+  """
+
+
 import asyncio
 import json
 
