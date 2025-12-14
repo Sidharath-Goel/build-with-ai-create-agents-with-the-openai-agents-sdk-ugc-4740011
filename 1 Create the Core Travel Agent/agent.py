@@ -4,47 +4,33 @@ All examples use Python and the OpenAI client.
 
 Prereqs:
   pip install -r requirements.txt
-  export API_KEY = os.environ[...] or set the api_key to the client
+  Install Ollama, run 'ollama serve', pull 'llama3.2'
 """
-import os
 import asyncio
 import json
 
 from openai import OpenAI
-from dotenv import load_dotenv, find_dotenv
-from agents import Agent, Runner, ModelSettings
 from pydantic import BaseModel, ValidationError
 
-# read local .env file
-_ = load_dotenv(find_dotenv()) 
-
-# retrieve OpenAI API key
+# Ollama client (local LLM)
 client = OpenAI(
-  api_key=os.environ['OPENAI_API_KEY']  
+    base_url="http://localhost:11434/v1",
+    api_key="ollama"
 )
 
 # # ---------------------------------------------------------------------------
-# # Create the Core Travel Agent
+# # Create the Core Travel Agent (using Ollama directly)
 # # ---------------------------------------------------------------------------
 class TravelOutput(BaseModel):
     destination: str
     duration: str
     summary: str
 
-travel_agent = Agent(
-    name="Travel Agent",
-    model="gpt-5",
-    instructions=(
-        "You are a friendly and knowledgeable travel planner that helps users plan trips, "
-        "suggest destinations, and create brief summaries of their journeys. "
-        "Always return your response as valid JSON matching this structure: "
-        '{"destination": "string", "duration": "string", "summary": "string"}'
-    ), 
-    output_type=TravelOutput, 
-    model_settings=ModelSettings(
-          reasoning={"effort": "medium"},   # minimal | low | medium | high 
-          extra_body={"text":{"verbosity":"low"}}  # low | medium | high
-    )
+instructions = (
+    "You are a friendly and knowledgeable travel planner that helps users plan trips, "
+    "suggest destinations, and create brief summaries of their journeys. "
+    "Always return your response as valid JSON matching this structure: "
+    '{"destination": "string", "duration": "string", "summary": "string"}'
 )
 
 # --- Pretty print helper ----------------------------------------------------
@@ -59,13 +45,24 @@ def print_fields(data):
     print(f"Duration: {data.duration}")
     print(f"Summary: {data.summary}")
 
-async def main():
+def main():
+    print("Starting agent...")
     try:
-        result = await Runner.run(travel_agent, "Plan a 3-day trip to Jamaica under $1500. " \
-                                                "Find uncommon places that are off the beaten path and little known.")
-        print_fields(result.final_output)
+        print("Calling Ollama API...")
+        response = client.chat.completions.create(
+            model="llama3.2",
+            messages=[
+                {"role": "system", "content": instructions},
+                {"role": "user", "content": "Plan a 3-day trip to Mussorie under INR 5000. Find uncommon places that are off the beaten path and little known."}
+            ],
+            temperature=0.7
+        )
+        print("API call successful.")
+        result_content = response.choices[0].message.content
+        print(f"Raw response: {result_content}")
+        print_fields(result_content)
     except Exception as e:
         print("Error", e)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

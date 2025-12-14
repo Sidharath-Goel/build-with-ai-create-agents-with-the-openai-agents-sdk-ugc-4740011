@@ -1,0 +1,13 @@
+Installed Python runtime widnows. 
+Python Extension here for working with VSCode
+OpenAI Python client SDK pinned version
+OpenAI Python AGENTS SDK pinned version
+Pydantic
+fastapi - This repo is preparing you for turning agents into services
+
+Switched to "Local LLM" Ollamma
+
+Installed Ollama for Windows (correct). downlaoded from website.
+Ran ollama pull llama3.2 from VS Code terminal
+VS Code is just a terminal. It uses the same Ollama installation.
+Now models has to ebd ownladed as well
