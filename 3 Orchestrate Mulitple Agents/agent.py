@@ -1,42 +1,27 @@
 """
 Build with AI: Create Agents with the OpenAI Agents SDK
 All examples use Python and the OpenAI client.
-Apart from OpenAI Websearch , uses an additonal websearch function too
+
 Prereqs:
   pip install -r requirements.txt
-  export API_KEY = os.environ[...] or set the api_key to the client
+  Install Ollama runtime on windows, run 'ollama serve via tewrminal', pull 'llama3.2'
+  Running local Llama server
 """
 import os
-import asyncio
 import json
 import requests
 
 from openai import OpenAI
-from dotenv import load_dotenv, find_dotenv
-from agents import Agent, Runner, ModelSettings, WebSearchTool, tool
 from pydantic import BaseModel, ValidationError
 
-# read local .env file
-_ = load_dotenv(find_dotenv()) 
-
-# retrieve OpenAI API key
+# Ollama client (local LLM)
 client = OpenAI(
-  api_key=os.environ['OPENAI_API_KEY']  
+    base_url="http://localhost:11434/v1",
+    api_key="ollama"
 )
 
-@tool
-def web_search(query: str) -> str:
-    """Search the web for information about a query using DuckDuckGo."""
-    try:
-        url = f"https://api.duckduckgo.com/?q={query}&format=json"
-        response = requests.get(url)
-        data = response.json()
-        return data.get('AbstractText', data.get('Answer', 'No information found'))
-    except Exception as e:
-        return f"Error searching: {e}"
-
 # # ---------------------------------------------------------------------------
-# # Orchestrate Mulitple Agents
+# # Orchestrate Multiple Agents (using local LLM)
 # # ---------------------------------------------------------------------------
 class TravelOutput(BaseModel):
     destination: str
@@ -45,99 +30,291 @@ class TravelOutput(BaseModel):
     cost: str
     tips: str
 
+def web_search(query):
+    try:
+        url = f"https://api.duckduckgo.com/?q={query}&format=json"
+        response = requests.get(url)
+        data = response.json()
+        return data.get('AbstractText', data.get('Answer', 'No information found'))
+    except Exception as e:
+        return f"Error searching: {e}"
+
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web for information about a query",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "planner_agent",
+            "description": "Call the planner agent to build a day-by-day itinerary",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "The user prompt"
+                    }
+                },
+                "required": ["prompt"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "budget_agent",
+            "description": "Call the budget agent to estimate trip costs",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "The user prompt"
+                    }
+                },
+                "required": ["prompt"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "local_guide_agent",
+            "description": "Call the local guide agent for restaurants and tips",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "The user prompt"
+                    }
+                },
+                "required": ["prompt"]
+            }
+        }
+    }
+]
+
 # ---- Planner Agent (builds day-by-day itinerary) ----
-planner_agent = Agent(
-    name="Planner Agent",
-    model="gpt-5",
-    handoff_description="Use me when the user asks to plan or outline an itinerary, schedule, or daily plan.",
-    instructions=(
-        "You specialize in building day-by-day travel itineraries and sequencing activities. "
-        'Always return JSON with this structure: {"destination":"string","duration":"string","summary":"string"}.'
-    ),
-    model_settings=ModelSettings(
-        reasoning={"effort": "medium"},
-        extra_body={"text": {"verbosity": "low"}}
-    ),
-    tools=[
-        WebSearchTool(),
-        web_search
+def planner_agent(user_prompt):
+    instructions = (
+        "You are the Planner Agent. You specialize in building day-by-day travel itineraries and sequencing activities. "
+        "Always return your response as valid JSON matching this structure: "
+        '{"destination": "string", "duration": "string", "summary": "string"}'
+    )
+    messages = [
+        {"role": "system", "content": instructions},
+        {"role": "user", "content": user_prompt}
     ]
-)
+    try:
+        response = client.chat.completions.create(
+            model="llama3.2",
+            messages=messages,
+            temperature=0.7,
+            tools=tools,
+            tool_choice="required"
+        )
+        message = response.choices[0].message
+        if message.tool_calls:
+            for tool_call in message.tool_calls:
+                if tool_call.function.name == "web_search":
+                    args = json.loads(tool_call.function.arguments)
+                    result = web_search(args['query'])
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": result
+                    })
+            response = client.chat.completions.create(
+                model="llama3.2",
+                messages=messages,
+                temperature=0.7,
+                tools=tools,
+                tool_choice="auto"
+            )
+        result_content = response.choices[0].message.content
+        # Try to enforce final JSON format; if invalid, ask the model to only return JSON
+        try:
+            parsed = json.loads(result_content)
+            # Ensure required keys exist
+            for key in ["destination", "duration", "summary", "cost", "tips"]:
+                if key not in parsed:
+                    raise ValueError("missing key")
+            return result_content
+        except Exception:
+            messages.append({
+                "role": "system",
+                "content": "Your previous output was not valid JSON. Return ONLY a single JSON object exactly matching this schema: {\"destination\": \"string\", \"duration\": \"string\", \"summary\": \"string\", \"cost\": \"string\", \"tips\": \"string\"}. No code, no text, no explanations."
+            })
+            response = client.chat.completions.create(
+                model="llama3.2",
+                messages=messages,
+                temperature=0.2,
+                tools=tools,
+                tool_choice="none"
+            )
+            return response.choices[0].message.content
+    except Exception as e:
+        return f"Error: {e}"
 
 # ---- Budget Agent (estimates costs under constraints) ----
-budget_agent = Agent(
-    name="Budget Agent",
-    model="gpt-5",
-    handoff_description="Use me when the user mentions budget, price, cost, dollars, under $X, or asks 'how much'.",
-    instructions=(
-        "You estimate costs for lodging, food, transport, and activities at a high level; flag budget violations. "
-        'Always return JSON with this structure: {"cost":"string"}.'
-    ),
-    model_settings=ModelSettings(
-        reasoning={"effort": "medium"},
-        extra_body={"text": {"verbosity": "low"}}
-    ),
-    tools=[
-        WebSearchTool(),
-        web_search
+def budget_agent(user_prompt):
+    instructions = (
+        "You are the Budget Agent. You estimate costs for lodging, food, transport, and activities at a high level; flag budget violations. "
+        "Always return your response as valid JSON matching this structure: "
+        '{"cost": "string"}'
+    )
+    messages = [
+        {"role": "system", "content": instructions},
+        {"role": "user", "content": user_prompt}
     ]
-)
+    try:
+        response = client.chat.completions.create(
+            model="llama3.2",
+            messages=messages,
+            temperature=0.7,
+            tools=tools
+        )
+        message = response.choices[0].message
+        if message.tool_calls:
+            for tool_call in message.tool_calls:
+                if tool_call.function.name == "web_search":
+                    args = json.loads(tool_call.function.arguments)
+                    result = web_search(args['query'])
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": result
+                    })
+            response = client.chat.completions.create(
+                model="llama3.2",
+                messages=messages,
+                temperature=0.7,
+                tools=tools
+            )
+        result_content = response.choices[0].message.content
+        return result_content
+    except Exception as e:
+        return f"Error: {e}"
 
 # ---- Local Guide Agent (adds local tips & dining) ----
-local_guide_agent = Agent(
-    name="Local Guide Agent",
-    model="gpt-5",
-    handoff_description="Use me when the user asks for food, restaurants, neighborhoods, local tips, or 'what's good nearby'.",
-    instructions=(
-        "You provide restaurants, neighborhoods, cultural tips, and current local highlights. "
-        'Always return JSON with this structure: {"tips":"string"}.'
-    ),
-    model_settings=ModelSettings(
-        reasoning={"effort": "medium"},
-        extra_body={"text": {"verbosity": "low"}}
-    ),
-    tools=[
-        WebSearchTool(),
-        web_search
+def local_guide_agent(user_prompt):
+    instructions = (
+        "You are the Local Guide Agent. You provide restaurants, neighborhoods, cultural tips, and current local highlights. "
+        "Always return your response as valid JSON matching this structure: "
+        '{"tips": "string"}'
+    )
+    messages = [
+        {"role": "system", "content": instructions},
+        {"role": "user", "content": user_prompt}
     ]
-)
+    try:
+        response = client.chat.completions.create(
+            model="llama3.2",
+            messages=messages,
+            temperature=0.7,
+            tools=tools
+        )
+        message = response.choices[0].message
+        if message.tool_calls:
+            for tool_call in message.tool_calls:
+                if tool_call.function.name == "web_search":
+                    args = json.loads(tool_call.function.arguments)
+                    result = web_search(args['query'])
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": result
+                    })
+            response = client.chat.completions.create(
+                model="llama3.2",
+                messages=messages,
+                temperature=0.7,
+                tools=tools
+            )
+        result_content = response.choices[0].message.content
+        return result_content
+    except Exception as e:
+        return f"Error: {e}"
 
-# ---- Core orchestrator: Travel Agent ----
-travel_agent = Agent(
-    name="Travel Agent",
-    model="gpt-5",
-    instructions=(
-        "You are a friendly and knowledgeable travel planner that helps users plan trips, suggest destinations, and create detailed summaries of their journeys.\n"
-        "Your primary role is to orchestrate other specialized agents (used as tools) to complete the user's request.\n"
-        "\n"
-        "When planning an itinerary, call the **Planner Agent** to create daily schedules, organize destinations, and recommend attractions or activities. Do not create itineraries yourself.\n"
-        "When estimating costs, call the **Budget Agent** to calculate the total trip cost including flights, hotels, and activities. Do not calculate or estimate prices on your own.\n"
-        "When recommending local experiences, restaurants, neighborhoods, or cultural highlights, call the **Local Guide Agent** to provide these insights. Do not generate local recommendations without this agent.\n"
-        "\n"
-        "Use these agents one at a time in a logical order based on the request — start with the Planner Agent, then the Budget Agent, and finally the Local Guide Agent.\n"
-        "After receiving results from these agents, combine their outputs into a single structured summary.\n"
-        "\n"
-        "Return JSON output using this exact structure:\n"
-        "{\"destination\": \"string\", \"duration\": \"string\", \"summary\": \"string\", \"cost\": \"string\", \"tips\": \"string\"}.\n"
-    ),
-    output_type=TravelOutput, 
-    model_settings=ModelSettings(
-          reasoning={"effort": "medium"},   # minimal | low | medium | high 
-          extra_body={"text":{"verbosity":"low"}}  # low | medium | high
-    ),
-    tools=[
-        WebSearchTool(),
-        planner_agent.as_tool(
-            tool_name="planner_agent", 
-            tool_description="plan or outline an itinerary, schedule, or daily plan"),
-        budget_agent.as_tool(
-            tool_name="budget_agent", 
-            tool_description="calculates the cost of a trip"),
-        local_guide_agent.as_tool(
-            tool_name="local_guide_agent", 
-            tool_description="provide restaurants, neighborhoods, cultural tips, and current local highlights")
+# ---- Orchestrator (handles calling sub-agents) ----
+def orchestrator(user_prompt):
+    instructions = (
+        "You are the Travel Orchestrator. Your role is to coordinate specialized agents to plan a complete trip.\n"
+        "You MUST use tools. Do not write or output code. Do not describe code.\n"
+        "Call the agents in this order: first planner_agent for itinerary, then budget_agent for costs, then local_guide_agent for tips.\n"
+        "After getting results from all, return a SINGLE JSON object EXACTLY matching this schema (no extra keys, no prose):\n"
+        '{"destination": "string", "duration": "string", "summary": "string", "cost": "string", "tips": "string"}'
+    )
+    messages = [
+        {"role": "system", "content": instructions},
+        {"role": "user", "content": user_prompt}
     ]
-)
+    try:
+        print("Orchestrator: Initial LLM call...")
+        response = client.chat.completions.create(
+            model="llama3.2",
+            messages=messages,
+            temperature=0.7,
+            tools=tools
+        )
+        message = response.choices[0].message
+        tool_call_count = 0
+        max_calls = 10  # Prevent infinite loop
+        while message.tool_calls and tool_call_count < max_calls:
+            tool_call_count += 1
+            print(f"Orchestrator: Handling tool calls (iteration {tool_call_count})...")
+            for tool_call in message.tool_calls:
+                function_name = tool_call.function.name
+                args = json.loads(tool_call.function.arguments)
+                print(f"Calling tool: {function_name}")
+                if function_name == "web_search":
+                    result = web_search(args['query'])
+                elif function_name == "planner_agent":
+                    result = planner_agent(args['prompt'])
+                elif function_name == "budget_agent":
+                    result = budget_agent(args['prompt'])
+                elif function_name == "local_guide_agent":
+                    result = local_guide_agent(args['prompt'])
+                else:
+                    result = "Unknown tool"
+                print(f"Tool result: {result[:100]}...")  # Truncate for brevity
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": result
+                })
+            print("Orchestrator: Follow-up LLM call...")
+            response = client.chat.completions.create(
+                model="llama3.2",
+                messages=messages,
+                temperature=0.7,
+                tools=tools
+            )
+            message = response.choices[0].message
+        if tool_call_count >= max_calls:
+            print("Orchestrator: Max tool calls reached, stopping.")
+        result_content = response.choices[0].message.content
+        print(f"Orchestrator: Final result: {result_content}")
+        return result_content
+    except Exception as e:
+        print(f"Orchestrator error: {e}")
+        return f"Error: {e}"
 
 # --- Pretty print helper ----------------------------------------------------
 def print_fields(data):
@@ -153,16 +330,19 @@ def print_fields(data):
     print(f"Cost: {data.cost}")
     print(f"Tips: {data.tips}")
 
-async def main():
+def main():
     try:
-        result = await Runner.run(travel_agent, '''I'm considering a trip to Jamaica sometime in late September or early October. 
+        prompt = '''I'm considering a trip to New Delhi sometime in late September or early October. 
                                                 I'm pretty flexible with the exact dates, maybe around a week-long trip.     
                                                 I'd like to get an idea of flight ticket prices and some well-located hotels.     
                                                 I'm also a big foodie, so any recommendations for great local restaurants would be fantastic! 
-                                                Do not ask follow-up questions.''')
-        print_fields(result.final_output)
+                                                Do not ask follow-up questions.'''
+        print("Calling Orchestrator...")
+        result = orchestrator(prompt)
+        print("Orchestrator result:", result)
+        print_fields(result)
     except Exception as e:
         print("Error", e)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
