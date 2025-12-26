@@ -1,3 +1,4 @@
+#1 -- Single Agent without Tools---
 Installed Python runtime widnows. 
 Python Extension here for working with VSCode
 OpenAI Python client SDK pinned version
@@ -10,4 +11,6 @@ Switched to "Local LLM" Ollamma
 Installed Ollama for Windows (correct). downlaoded from website.
 Ran ollama pull llama3.2 from VS Code terminal
 VS Code is just a terminal. It uses the same Ollama installation.
-Now models has to ebd ownladed as well
+Now models has to be downloaded as well
+
+#2 -- Single Agent with tool. Local LLM handles the tool calls by executing the web search and appending results to messages.

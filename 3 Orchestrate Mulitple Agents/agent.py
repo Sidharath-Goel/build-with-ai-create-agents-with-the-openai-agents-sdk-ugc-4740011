@@ -1,7 +1,7 @@
 """
 Build with AI: Create Agents with the OpenAI Agents SDK
 All examples use Python and the OpenAI client.
-
+Apart from OpenAI Websearch , uses an additonal websearch function too
 Prereqs:
   pip install -r requirements.txt
   export API_KEY = os.environ[...] or set the api_key to the client
@@ -9,10 +9,11 @@ Prereqs:
 import os
 import asyncio
 import json
+import requests
 
 from openai import OpenAI
 from dotenv import load_dotenv, find_dotenv
-from agents import Agent, Runner, ModelSettings, WebSearchTool
+from agents import Agent, Runner, ModelSettings, WebSearchTool, tool
 from pydantic import BaseModel, ValidationError
 
 # read local .env file
@@ -22,6 +23,17 @@ _ = load_dotenv(find_dotenv())
 client = OpenAI(
   api_key=os.environ['OPENAI_API_KEY']  
 )
+
+@tool
+def web_search(query: str) -> str:
+    """Search the web for information about a query using DuckDuckGo."""
+    try:
+        url = f"https://api.duckduckgo.com/?q={query}&format=json"
+        response = requests.get(url)
+        data = response.json()
+        return data.get('AbstractText', data.get('Answer', 'No information found'))
+    except Exception as e:
+        return f"Error searching: {e}"
 
 # # ---------------------------------------------------------------------------
 # # Orchestrate Mulitple Agents
@@ -47,7 +59,8 @@ planner_agent = Agent(
         extra_body={"text": {"verbosity": "low"}}
     ),
     tools=[
-        WebSearchTool()
+        WebSearchTool(),
+        web_search
     ]
 )
 
@@ -63,7 +76,11 @@ budget_agent = Agent(
     model_settings=ModelSettings(
         reasoning={"effort": "medium"},
         extra_body={"text": {"verbosity": "low"}}
-    )
+    ),
+    tools=[
+        WebSearchTool(),
+        web_search
+    ]
 )
 
 # ---- Local Guide Agent (adds local tips & dining) ----
@@ -80,7 +97,8 @@ local_guide_agent = Agent(
         extra_body={"text": {"verbosity": "low"}}
     ),
     tools=[
-        WebSearchTool()
+        WebSearchTool(),
+        web_search
     ]
 )
 
